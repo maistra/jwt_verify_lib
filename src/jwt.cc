@@ -91,7 +91,6 @@ Status Jwt::parseFromString(const std::string& jwt) {
   if (payload_getter.GetString("sub", &sub_) == StructUtils::WRONG_TYPE) {
     return Status::JwtPayloadParseError;
   }
-
   if (payload_getter.GetInt64("iat", &iat_) == StructUtils::WRONG_TYPE) {
     return Status::JwtPayloadParseError;
   }
