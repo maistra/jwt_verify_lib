@@ -21,13 +21,16 @@ cc_library(
         "jwt_verify_lib/status.h",
         "jwt_verify_lib/struct_utils.h",
         "jwt_verify_lib/verify.h",
+        "src/common.h",
     ],
     deps = [
         "//external:abseil_flat_hash_set",
         "//external:abseil_strings",
         "//external:abseil_time",
         "//external:protobuf",
-        "//external:ssl",
+        "//external:bssl_wrapper_lib",
+        "//external:openssl_cbs_lib",
+        "@openssl//:openssl-lib",
     ],
 )
 

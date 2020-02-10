@@ -18,12 +18,12 @@
 #include "absl/time/clock.h"
 #include "jwt_verify_lib/check_audience.h"
 #include "openssl/bn.h"
-#include "openssl/curve25519.h"
+#include "common.h"
 #include "openssl/ecdsa.h"
 #include "openssl/err.h"
 #include "openssl/evp.h"
 #include "openssl/hmac.h"
-#include "openssl/mem.h"
+//#include "openssl/mem.h"
 #include "openssl/rsa.h"
 #include "openssl/sha.h"
 
@@ -111,6 +111,7 @@ bool verifySignatureEC(EC_KEY* key, const EVP_MD* md, const uint8_t* signature,
       signed_data == nullptr) {
     return false;
   }
+
   bssl::UniquePtr<EVP_MD_CTX> md_ctx(EVP_MD_CTX_create());
   std::vector<uint8_t> digest(EVP_MAX_MD_SIZE);
   unsigned int digest_len = 0;
@@ -119,7 +120,7 @@ bool verifySignatureEC(EC_KEY* key, const EVP_MD* md, const uint8_t* signature,
     return false;
   }
 
-  if (EVP_DigestUpdate(md_ctx.get(), signed_data, signed_data_len) == 0) {
+  if (EVP_DigestUpdate(md_ctx.get(), signed_data, signed_data_len) == 0) {  
     return false;
   }
 
@@ -132,12 +133,17 @@ bool verifySignatureEC(EC_KEY* key, const EVP_MD* md, const uint8_t* signature,
     return false;
   }
 
-  if (BN_bin2bn(signature, signature_len / 2, ecdsa_sig->r) == nullptr ||
-      BN_bin2bn(signature + (signature_len / 2), signature_len / 2,
-                ecdsa_sig->s) == nullptr) {
-    return false;
+  BIGNUM* pr = BN_new();
+  BIGNUM* ps = BN_new();
+  //ECDSA_SIG_get0(ecdsa_sig.get(), &pr, &ps);
+  if (BN_bin2bn(signature, signature_len / 2, pr) == nullptr ||
+      BN_bin2bn(signature + (signature_len / 2), signature_len / 2, ps) == nullptr) {
+	BN_free(pr);
+	BN_free(ps);
+	return false;
   }
 
+  ECDSA_SIG_set0(ecdsa_sig.get(), pr, ps);
   if (ECDSA_do_verify(digest.data(), digest_len, ecdsa_sig.get(), key) == 1) {
     return true;
   }
@@ -146,8 +152,7 @@ bool verifySignatureEC(EC_KEY* key, const EVP_MD* md, const uint8_t* signature,
   return false;
 }
 
-bool verifySignatureEC(EC_KEY* key, const EVP_MD* md,
-                       absl::string_view signature,
+bool verifySignatureEC(EC_KEY* key, const EVP_MD* md, absl::string_view signature,
                        absl::string_view signed_data) {
   return verifySignatureEC(key, md, castToUChar(signature), signature.length(),
                            castToUChar(signed_data), signed_data.length());
@@ -196,8 +201,14 @@ Status verifySignatureEd25519(absl::string_view key,
     return Status::JwtEd25519SignatureWrongLength;
   }
 
-  if (ED25519_verify(castToUChar(signed_data), signed_data.length(),
-                     castToUChar(signature), castToUChar(key.data())) == 1) {
+  bssl::UniquePtr<EVP_MD_CTX> ctx(EVP_MD_CTX_new());
+  bssl::UniquePtr<EVP_PKEY> pkey(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, castToUChar(key), key.length()));
+  int res = EVP_DigestVerifyInit(ctx.get(), NULL, NULL, NULL, pkey.get());
+  if (res == 1) {
+    res = EVP_DigestVerify(ctx.get(), castToUChar(signature), signature.length(), castToUChar(signed_data), signed_data.length());
+  }
+
+  if (res == 1) {
     return Status::Ok;
   }
 

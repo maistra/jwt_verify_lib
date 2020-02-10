@@ -17,16 +17,19 @@
 #include <assert.h>
 
 #include <iostream>
+#include <fstream>
 
 #include "absl/strings/escaping.h"
 #include "absl/strings/match.h"
 #include "google/protobuf/struct.pb.h"
 #include "google/protobuf/util/json_util.h"
+#include "opensslcbs/cbs.h"
 #include "jwt_verify_lib/struct_utils.h"
 #include "openssl/bio.h"
 #include "openssl/bn.h"
-#include "openssl/curve25519.h"
+#include "common.h"
 #include "openssl/ecdsa.h"
+#include "openssl/err.h"
 #include "openssl/evp.h"
 #include "openssl/rsa.h"
 #include "openssl/sha.h"
@@ -47,6 +50,11 @@ inline const uint8_t* castToUChar(const std::string& str) {
 }
 
 /** Class to create key object from string of public key, formatted in PEM
+inline const char* castToChar(const std::string& str) {
+  return reinterpret_cast<const char*>(str.c_str());
+}
+
+/** Class to create EVP_PKEY object from string of public key, formatted in PEM
  * or JWKs.
  * If it fails, status_ holds the failure reason.
  *
@@ -78,16 +86,16 @@ class KeyGetter : public WithStatus {
       updateStatus(Status::JwksEcCreateKeyFail);
       return nullptr;
     }
-    bssl::UniquePtr<BIGNUM> bn_x = createBigNumFromBase64UrlString(x);
-    bssl::UniquePtr<BIGNUM> bn_y = createBigNumFromBase64UrlString(y);
+    BIGNUM *bn_x = createBigNumFromBase64UrlString(x);
+    BIGNUM *bn_y = createBigNumFromBase64UrlString(y);
     if (!bn_x || !bn_y) {
       // EC public key field x or y Base64 decode fail
       updateStatus(Status::JwksEcXorYBadBase64);
       return nullptr;
     }
 
-    if (EC_KEY_set_public_key_affine_coordinates(ec_key.get(), bn_x.get(),
-                                                 bn_y.get()) == 0) {
+    if (EC_KEY_set_public_key_affine_coordinates(ec_key.get(), bn_x,
+                                                 bn_y) == 0) {
       updateStatus(Status::JwksEcParseError);
       return nullptr;
     }
@@ -95,20 +103,26 @@ class KeyGetter : public WithStatus {
   }
 
   bssl::UniquePtr<RSA> createRsaFromJwk(const std::string& n,
-                                        const std::string& e) {
+                                          const std::string& e) {
     bssl::UniquePtr<RSA> rsa(RSA_new());
-    rsa->n = createBigNumFromBase64UrlString(n).release();
-    rsa->e = createBigNumFromBase64UrlString(e).release();
-    if (rsa->n == nullptr || rsa->e == nullptr) {
+    BIGNUM *bn_n = createBigNumFromBase64UrlString(n);
+    BIGNUM *bn_e = createBigNumFromBase64UrlString(e);
+
+    if (bn_n == nullptr || bn_e == nullptr) {
       // RSA public key field is missing or has parse error.
       updateStatus(Status::JwksRsaParseError);
       return nullptr;
     }
-    if (BN_cmp_word(rsa->e, 3) != 0 && BN_cmp_word(rsa->e, 65537) != 0) {
+
+    if (BN_cmp_word(bn_e, 3) != 0 && BN_cmp_word(bn_e, 65537) != 0) {
       // non-standard key; reject it early.
+      BN_free(bn_n);
+      BN_free(bn_e);
       updateStatus(Status::JwksRsaParseError);
       return nullptr;
     }
+
+    RSA_set0_key(rsa.get(), bn_n, bn_e, NULL);
     return rsa;
   }
 
@@ -125,14 +139,13 @@ class KeyGetter : public WithStatus {
   }
 
  private:
-  bssl::UniquePtr<BIGNUM> createBigNumFromBase64UrlString(
+  BIGNUM* createBigNumFromBase64UrlString(
       const std::string& s) {
     std::string s_decoded;
     if (!absl::WebSafeBase64Unescape(s, &s_decoded)) {
       return nullptr;
     }
-    return bssl::UniquePtr<BIGNUM>(
-        BN_bin2bn(castToUChar(s_decoded), s_decoded.length(), NULL));
+    return BN_bin2bn(castToUChar(s_decoded), s_decoded.length(), NULL);
   };
 };
 
@@ -471,7 +484,7 @@ void Jwks::createFromPemCore(const std::string& pkey_pem) {
   }
   assert(e.getStatus() == Status::Ok);
 
-  switch (EVP_PKEY_type(evp_pkey->type)) {
+  switch (EVP_PKEY_type(EVP_PKEY_id(evp_pkey.get()))) {
     case EVP_PKEY_RSA:
       key_ptr->rsa_.reset(EVP_PKEY_get1_RSA(evp_pkey.get()));
       key_ptr->kty_ = "RSA";
