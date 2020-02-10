@@ -41,11 +41,7 @@ TEST(VerifyExpTest, Expired) {
   Jwt jwt;
   Jwks jwks;
   EXPECT_EQ(jwt.parseFromString(JwtText), Status::Ok);
-  // proto.Struct is using "double" for number_value. A big integer has been
-  // casted to double and back may not be the same.
-  // In this case, 9223372036854775806 become 9223372036854775808
-  // so using 9223372036854775807 for the test will not work.
-  EXPECT_EQ(verifyJwt(jwt, jwks, 9223372036854775810U), Status::JwtExpired);
+  EXPECT_EQ(verifyJwt(jwt, jwks, 9223372036854775809), Status::JwtExpired);
 }
 
 TEST(VerifyExpTest, NotBefore) {

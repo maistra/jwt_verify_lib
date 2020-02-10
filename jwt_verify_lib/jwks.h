@@ -22,6 +22,8 @@
 #include "openssl/ec.h"
 #include "openssl/evp.h"
 
+#include "bssl_wrapper/bssl_wrapper.h"
+
 namespace google {
 namespace jwt_verify {
 
@@ -44,11 +46,9 @@ class Jwks : public WithStatus {
   struct Pubkey {
     bssl::UniquePtr<EVP_PKEY> evp_pkey_;
     bssl::UniquePtr<EC_KEY> ec_key_;
-    std::string hmac_key_;
     std::string kid_;
     std::string kty_;
     std::string alg_;
-    std::string crv_;
     bool alg_specified_ = false;
     bool kid_specified_ = false;
     bool pem_format_ = false;
