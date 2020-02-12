@@ -83,10 +83,9 @@ class EvpPkeyGetter : public WithStatus {
     return createEvpPkeyFromRsa(createRsaFromJwk(n, e).get());
   }
 
-  bssl::UniquePtr<EC_KEY> createEcKeyFromJwkEC(const std::string& x,
+  bssl::UniquePtr<EC_KEY> createEcKeyFromJwkEC(int nid, const std::string& x,
                                                const std::string& y) {
-    bssl::UniquePtr<EC_KEY> ec_key(
-        EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+    bssl::UniquePtr<EC_KEY> ec_key(EC_KEY_new_by_curve_name(nid));
     if (!ec_key) {
       updateStatus(Status::JwksEcCreateKeyFail);
       return nullptr;
@@ -94,8 +93,8 @@ class EvpPkeyGetter : public WithStatus {
     BIGNUM *bn_x = createBigNumFromBase64UrlString(x);
     BIGNUM *bn_y = createBigNumFromBase64UrlString(y);
     if (!bn_x || !bn_y) {
-      // EC public key field is missing or has parse error.
-      updateStatus(Status::JwksEcParseError);
+      // EC public key field x or y Base64 decode fail
+      updateStatus(Status::JwksEcXorYBadBase64);
       return nullptr;
     }
 
@@ -149,7 +148,7 @@ class EvpPkeyGetter : public WithStatus {
 	  return nullptr;
 	}
 
-	int success = RSA_set0_key(rsa.get(), bn_n, bn_e, NULL);
+	RSA_set0_key(rsa.get(), bn_n, bn_e, NULL);
 	return rsa;
   }
 };
@@ -189,13 +188,52 @@ Status extractJwkFromJwkRSA(const ::google::protobuf::Struct& jwk_pb,
 Status extractJwkFromJwkEC(const ::google::protobuf::Struct& jwk_pb,
                            Jwks::Pubkey* jwk) {
 
-  if (jwk->alg_specified_ && jwk->alg_ != "ES256") {
+  if (jwk->alg_specified_ &&
+      (jwk->alg_.size() < 2 || jwk->alg_.compare(0, 2, "ES") != 0)) {
     return Status::JwksECKeyBadAlg;
   }
 
   StructUtils jwk_getter(jwk_pb);
+  std::string crv_str;
+  auto code = jwk_getter.GetString("crv", &crv_str);
+  if (code == StructUtils::MISSING) {
+    crv_str = "";
+  }
+  if (code == StructUtils::WRONG_TYPE) {
+    return Status::JwksECKeyBadCrv;
+  }
+  jwk->crv_ = crv_str;
+
+  // If both alg and crv specified, make sure they match
+  if (jwk->alg_specified_ && !jwk->crv_.empty()) {
+    if (!((jwk->alg_ == "ES256" && jwk->crv_ == "P-256") ||
+          (jwk->alg_ == "ES384" && jwk->crv_ == "P-384") ||
+          (jwk->alg_ == "ES512" && jwk->crv_ == "P-521"))) {
+      return Status::JwksECKeyAlgNotCompatibleWithCrv;
+    }
+  }
+
+  // If neither alg or crv is set, assume P-256
+  if (!jwk->alg_specified_ && jwk->crv_.empty()) {
+    jwk->crv_ = "P-256";
+  }
+
+  int nid;
+  if (jwk->alg_ == "ES256" || jwk->crv_ == "P-256") {
+    nid = NID_X9_62_prime256v1;
+    jwk->crv_ = "P-256";
+  } else if (jwk->alg_ == "ES384" || jwk->crv_ == "P-384") {
+    nid = NID_secp384r1;
+    jwk->crv_ = "P-384";
+  } else if (jwk->alg_ == "ES512" || jwk->crv_ == "P-521") {
+    nid = NID_secp521r1;
+    jwk->crv_ = "P-521";
+  } else {
+    return Status::JwksECKeyAlgOrCrvUnsupported;
+  }
+
   std::string x_str;
-  auto code = jwk_getter.GetString("x", &x_str);
+  code = jwk_getter.GetString("x", &x_str);
   if (code == StructUtils::MISSING) {
     return Status::JwksECKeyMissingX;
   }
@@ -213,13 +251,37 @@ Status extractJwkFromJwkEC(const ::google::protobuf::Struct& jwk_pb,
   }
 
   EvpPkeyGetter e;
-  jwk->ec_key_ = e.createEcKeyFromJwkEC(x_str, y_str);
+  jwk->ec_key_ = e.createEcKeyFromJwkEC(nid, x_str, y_str);
   return e.getStatus();
 }
 
+Status extractJwkFromJwkOct(const ::google::protobuf::Struct& jwk_pb,
+                            Jwks::Pubkey* jwk) {
+  if (jwk->alg_specified_ && jwk->alg_ != "HS256" && jwk->alg_ != "HS384" &&
+      jwk->alg_ != "HS512") {
+    return Status::JwksHMACKeyBadAlg;
+  }
+
+  StructUtils jwk_getter(jwk_pb);
+  std::string k_str;
+  auto code = jwk_getter.GetString("k", &k_str);
+  if (code == StructUtils::MISSING) {
+    return Status::JwksHMACKeyMissingK;
+  }
+  if (code == StructUtils::WRONG_TYPE) {
+    return Status::JwksHMACKeyBadK;
+  }
+
+  std::string key;
+  if (!absl::WebSafeBase64Unescape(k_str, &key) || key.empty()) {
+    return Status::JwksOctBadBase64;
+  }
+
+  jwk->hmac_key_ = key;
+  return Status::Ok;
+}
 
 Status extractJwk(const ::google::protobuf::Struct& jwk_pb, Jwks::Pubkey* jwk) {
-
   StructUtils jwk_getter(jwk_pb);
   // Check "kty" parameter, it should exist.
   // https://tools.ietf.org/html/rfc7517#section-4.1
@@ -231,8 +293,8 @@ Status extractJwk(const ::google::protobuf::Struct& jwk_pb, Jwks::Pubkey* jwk) {
     return Status::JwksBadKty;
   }
 
-  // "kid" and "alg" are optional, if they do not exist, set them to empty.
-  // https://tools.ietf.org/html/rfc7517#page-8
+  // "kid", "alg" and "crv" are optional, if they do not exist, set them to
+  // empty. https://tools.ietf.org/html/rfc7517#page-8
   code = jwk_getter.GetString("kid", &jwk->kid_);
   if (code == StructUtils::OK) {
     jwk->kid_specified_ = true;
@@ -248,6 +310,8 @@ Status extractJwk(const ::google::protobuf::Struct& jwk_pb, Jwks::Pubkey* jwk) {
     return extractJwkFromJwkEC(jwk_pb, jwk);
   } else if (jwk->kty_ == "RSA") {
     return extractJwkFromJwkRSA(jwk_pb, jwk);
+  } else if (jwk->kty_ == "oct") {
+    return extractJwkFromJwkOct(jwk_pb, jwk);
   }
   return Status::JwksNotImplementedKty;
 }
@@ -255,7 +319,6 @@ Status extractJwk(const ::google::protobuf::Struct& jwk_pb, Jwks::Pubkey* jwk) {
 }  // namespace
 
 JwksPtr Jwks::createFrom(const std::string& pkey, Type type) {
-
   JwksPtr keys(new Jwks());
   switch (type) {
     case Type::JWKS:
@@ -271,7 +334,6 @@ JwksPtr Jwks::createFrom(const std::string& pkey, Type type) {
 }
 
 void Jwks::createFromPemCore(const std::string& pkey_pem) {
-
   keys_.clear();
   PubkeyPtr key_ptr(new Pubkey());
   EvpPkeyGetter e;
@@ -285,7 +347,6 @@ void Jwks::createFromPemCore(const std::string& pkey_pem) {
 }
 
 void Jwks::createFromJwksCore(const std::string& jwks_json) {
-
   keys_.clear();
 
   ::google::protobuf::util::JsonParseOptions options;
@@ -325,7 +386,6 @@ void Jwks::createFromJwksCore(const std::string& jwks_json) {
   if (keys_.empty()) {
     updateStatus(Status::JwksNoValidKeys);
   }
-
 }
 
 }  // namespace jwt_verify
