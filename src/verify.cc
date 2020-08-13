@@ -18,7 +18,7 @@
 #include "jwt_verify_lib/check_audience.h"
 
 #include "openssl/bn.h"
-#include "openssl/curve25519.h"
+#include "common.h"
 #include "openssl/ecdsa.h"
 #include "openssl/err.h"
 #include "openssl/evp.h"
@@ -165,8 +165,14 @@ Status verifySignatureEd25519(absl::string_view key,
     return Status::JwtEd25519SignatureWrongLength;
   }
 
-  if (ED25519_verify(castToUChar(signed_data), signed_data.length(),
-                     castToUChar(signature), castToUChar(key.data())) == 1) {
+  bssl::UniquePtr<EVP_MD_CTX> ctx(EVP_MD_CTX_new());
+  bssl::UniquePtr<EVP_PKEY> pkey(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, castToUChar(key), key.length()));
+  int res = EVP_DigestVerifyInit(ctx.get(), NULL, NULL, NULL, pkey.get());
+  if (res == 1) {
+    res = EVP_DigestVerify(ctx.get(), castToUChar(signature), signature.length(), castToUChar(signed_data), signed_data.length());
+  }
+
+  if (res == 1) {
     return Status::Ok;
   }
 
