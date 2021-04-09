@@ -1,14 +1,12 @@
 load(
     "//:repositories.bzl",
     "bsslwrapper_repositories",
-    "opensslcbs_repositories",
     "googletest_repositories",
     "abseil_repositories",
     "protobuf_repositories",
 )
 
 bsslwrapper_repositories()
-opensslcbs_repositories()
 googletest_repositories()
 abseil_repositories()
 protobuf_repositories()
