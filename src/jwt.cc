@@ -19,6 +19,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_split.h"
+#include "absl/time/clock.h"
 #include "google/protobuf/util/json_util.h"
 #include "jwt_verify_lib/struct_utils.h"
 
@@ -132,6 +133,18 @@ Status Jwt::parseFromString(const std::string& jwt) {
   if (!absl::WebSafeBase64Unescape(jwt_split[2], &signature_)) {
     // Signature is a bad Base64url input.
     return Status::JwtSignatureParseErrorBadBase64;
+  }
+  return Status::Ok;
+}
+
+Status Jwt::verifyTimeConstraint(uint64_t now, uint64_t clock_skew) const {
+  // Check Jwt is active (nbf).
+  if (now + clock_skew < nbf_) {
+    return Status::JwtNotYetValid;
+  }
+  // Check JWT has not expired (exp).
+  if (exp_ && now > exp_ + clock_skew) {
+    return Status::JwtExpired;
   }
   return Status::Ok;
 }
