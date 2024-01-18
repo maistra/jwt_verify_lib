@@ -179,6 +179,7 @@ std::string getStatusString(Status status) {
     case Status::JwksBioAllocError:
       return "Failed to create BIO due to memory allocation failure";
   };
+  return "";
 }
 
 }  // namespace jwt_verify

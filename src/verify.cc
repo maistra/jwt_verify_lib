@@ -133,17 +133,19 @@ bool verifySignatureEC(EC_KEY* key, const EVP_MD* md, const uint8_t* signature,
     return false;
   }
 
-  BIGNUM* pr = BN_new();
-  BIGNUM* ps = BN_new();
-  //ECDSA_SIG_get0(ecdsa_sig.get(), &pr, &ps);
-  if (BN_bin2bn(signature, signature_len / 2, pr) == nullptr ||
-      BN_bin2bn(signature + (signature_len / 2), signature_len / 2, ps) == nullptr) {
-	BN_free(pr);
-	BN_free(ps);
-	return false;
+  bssl::UniquePtr<BIGNUM> ecdsa_sig_r {BN_bin2bn(signature, signature_len / 2, nullptr)};
+  bssl::UniquePtr<BIGNUM> ecdsa_sig_s {BN_bin2bn(signature + (signature_len / 2), signature_len / 2, nullptr)};
+
+  if (ecdsa_sig_r.get() == nullptr || ecdsa_sig_s.get() == nullptr) {
+     return false;
+   }
+
+  if (ECDSA_SIG_set0(ecdsa_sig.get(), ecdsa_sig_r.get(), ecdsa_sig_s.get()) == 0) {
+    return false;
   }
 
-  ECDSA_SIG_set0(ecdsa_sig.get(), pr, ps);
+  ecdsa_sig_r.release();
+  ecdsa_sig_s.release();
   if (ECDSA_do_verify(digest.data(), digest_len, ecdsa_sig.get(), key) == 1) {
     return true;
   }
